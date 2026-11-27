@@ -14,6 +14,7 @@ from pathlib import Path
 import soundfile as sf
 import torch
 
+import prepare_rasa
 import train
 import train_vocoder
 from swar import checkpoint
@@ -78,7 +79,12 @@ def test_train_resume_and_synth():
         args = ["--data", str(tmp), "--ckpt", voc, "--batch-size", "2", "--workers", "0"]
         train_vocoder.main(args + ["--steps", "2"])
         train_vocoder.main(args + ["--steps", "3"])
-        assert torch.load(voc, weights_only=True)["step"] == 3, "vocoder did not resume"
+        state = torch.load(voc, weights_only=True)
+        assert state["step"] == 3, "vocoder did not resume"
+        del state["scaler"]  # as saved before mixed precision was added
+        torch.save(state, voc)
+        train_vocoder.main(args + ["--steps", "4"])
+        assert torch.load(voc, weights_only=True)["step"] == 4, "old vocoder checkpoint did not resume"
 
         out = tmp / "out.wav"
         sys.argv = ["synth.py", "--ckpt", ckpt, "--vocoder", voc, "--text", "नमस्ते", "--out", str(out)]
@@ -150,6 +156,51 @@ def test_vocoder_learns():
         history.append(loss.item())
     print(f"vocoder mel loss {history[0]:.2f} -> {history[-1]:.2f}")
     assert history[-1] < 0.3 * history[0], "vocoder loss did not fall"
+
+
+def test_prepare_rasa():
+    """A tiny fake Rasa shard: no download and no token."""
+    if importlib.util.find_spec("pyarrow") is None:
+        print("pyarrow not installed, skipping")
+        return
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    def wav_bytes():
+        buffer = io.BytesIO()
+        sf.write(buffer, 0.1 * torch.randn(48000).numpy(), 48000, format="WAV")
+        return buffer.getvalue()
+
+    rows = [{"filename": name, "text": "नमस्ते  घर", "gender": gender, "style": style,
+             "audio": {"bytes": wav_bytes(), "path": name}}
+            for name, gender, style in [("F_NEWS_1", "Female", "NEWS"), ("F_FEAR_1", "Female", "FEAR"),
+                                        ("M_NEWS_1", "Male", "NEWS")]]
+    real = prepare_rasa.list_shards, prepare_rasa.fetch
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        pq.write_table(pa.Table.from_pylist(rows), tmp / "fake.parquet")
+        fetched = []
+
+        def fake_fetch(shard, folder):
+            fetched.append(shard)
+            Path(folder).mkdir(parents=True, exist_ok=True)
+            return shutil.copy(tmp / "fake.parquet", Path(folder) / "shard.parquet")
+
+        prepare_rasa.list_shards = lambda: ["Nepali/test-00000-of-00001.parquet", "Nepali/train-00000-of-00001.parquet"]
+        prepare_rasa.fetch = fake_fetch
+        try:
+            out = tmp / "rasa"
+            prepare_rasa.main(["--out", str(out)])
+            prepare_rasa.main(["--out", str(out)])
+        finally:
+            prepare_rasa.list_shards, prepare_rasa.fetch = real
+        assert len(fetched) == 2, "a rerun downloaded finished shards again"
+        for split in ("train", "test"):
+            assert (out / f"{split}.txt").read_text(encoding="utf-8") == f"{split}/F_NEWS_1.wav|नमस्ते घर\n"
+            info = sf.info(str(out / split / "F_NEWS_1.wav"))
+            assert (info.samplerate, info.subtype, info.frames) == (SR, "PCM_16", SR)
+        assert sorted(p.name for p in out.rglob("*.wav")) == ["F_NEWS_1.wav"] * 2, "male or emotional clip kept"
+        assert not list(out.rglob("*.parquet")), "downloaded shard was not deleted"
 
 
 def expect_exit(function):
@@ -233,6 +284,7 @@ def test_backblaze():
 
 
 if __name__ == "__main__":
-    for test in (test_alignment, test_text, test_train_resume_and_synth, test_learns_alignment, test_vocoder_learns, test_backblaze):
+    for test in (test_alignment, test_text, test_train_resume_and_synth, test_learns_alignment, test_vocoder_learns, test_backblaze,
+                 test_prepare_rasa):
         test()
         print("ok", test.__name__)
