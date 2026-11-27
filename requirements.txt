@@ -3,3 +3,5 @@ torchaudio
 soundfile
 numpy
 b2sdk>=2,<3
+huggingface_hub
+pyarrow
