@@ -99,8 +99,11 @@ def test_learns_alignment():
     batch, n = 16, 8
     ids = torch.randint(1, 20, (batch, n))
     truth = torch.randint(2, 9, (batch, n))  # how many frames each character really lasts
-    sounds = torch.randn(20, 80)  # one fixed sound per character
-    clips = [sounds[i].repeat_interleave(d, dim=0) for i, d in zip(ids, truth)]
+    # as in real speech, a character's sound depends on its neighbour (here: the next one)
+    book, after = torch.randn(20, 80), torch.randn(20, 80)
+    following = torch.cat([ids[:, 1:], torch.zeros(batch, 1, dtype=torch.long)], dim=1)
+    sounds = (book[ids] + after[following]) / 2 ** 0.5
+    clips = [s.repeat_interleave(d, dim=0) for s, d in zip(sounds, truth)]
     mel_lens = torch.tensor([len(c) for c in clips])
     mels = torch.nn.utils.rnn.pad_sequence(clips, batch_first=True).transpose(1, 2)
 
@@ -120,6 +123,9 @@ def test_learns_alignment():
     print(f"loss {history[0]:.2f} -> {history[-1]:.2f}, durations within 1 frame: {close:.0%}")
     assert history[-1] < 0.5 * history[0], "loss did not fall"
     assert close >= 0.85, "alignment did not find the true durations"
+    prior = losses["prior"].item()
+    print(f"prior loss {prior:.3f}")
+    assert prior < 0.15, "mu cannot represent sounds that depend on context"
 
     # the sampler must turn noise into the right sounds, end to end
     model.eval()
