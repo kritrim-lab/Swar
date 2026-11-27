@@ -229,7 +229,13 @@ def test_backblaze():
     api = B2Api(InMemoryAccountInfo(), api_config=B2HttpApiConfig(_raw_api_class=RawSimulator))
     api.authorize_account("production", *api.session.raw_api.create_account())
     api.create_bucket("swar-test", "allPrivate")
-    real = checkpoint.b2_api, train.AcousticModel, Bucket.get_file_info_by_name, Bucket.upload_local_file
+    real = checkpoint.b2_api, train.AcousticModel
+    methods = ("get_file_info_by_name", "download_file_by_id", "list_file_versions", "upload_local_file")
+    real_methods = {method: getattr(Bucket, method) for method in methods}
+
+    def refuse(*args, **kwargs):
+        raise ConnectionError("refused")
+
     checkpoint.b2_api = lambda: api
     train.AcousticModel = lambda: AcousticModel(dim=16, encoder_layers=1, decoder_layers=1)
     try:
@@ -268,23 +274,34 @@ def test_backblaze():
             shutil.copy(tmp / "step2.pt", ckpt)  # a stale copy, e.g. left on Google Drive
             assert "at step 4" in run(5), "stale local file won over B2"
 
-            Bucket.upload_local_file = lambda *a, **k: (_ for _ in ()).throw(ConnectionError("offline"))
+            Bucket.upload_local_file = refuse
             assert "UPLOAD FAILED" in expect_exit(lambda: run(7))  # mid-run warns, the end must fail
             assert local_step() == 7 and remote_steps() == [5, 4]
-            Bucket.upload_local_file = real[3]
+            Bucket.upload_local_file = real_methods["upload_local_file"]
             assert "keeping local step 7" in run(8), "local progress must survive a failed upload"
             assert remote_steps()[0] == 8
 
+            # B2's daily download cap: lookups by name and downloads fail, listing and uploads work
+            Bucket.get_file_info_by_name = Bucket.download_file_by_id = refuse
+            assert "keeping local step 8" in run(9), "the cap blocked a run that needed no download"
+            assert remote_steps()[0] == 9
             ckpt.unlink()
-            Bucket.get_file_info_by_name = lambda *a, **k: (_ for _ in ()).throw(ConnectionError("offline"))
-            expect_exit(lambda: run(9))  # cannot check B2: stop, never start from zero
-            assert not ckpt.exists() and remote_steps()[0] == 8
+            expect_exit(lambda: run(10))  # a download is needed: stop, never start from zero
+            assert not ckpt.exists() and remote_steps()[0] == 9
+
+            Bucket.list_file_versions = refuse
+            expect_exit(lambda: run(10))  # cannot check B2 at all: stop
+            assert not ckpt.exists()
+            Bucket.list_file_versions = real_methods["list_file_versions"]
+            assert remote_steps()[0] == 9
 
             broken = torch.nn.Linear(2, 2)
             broken.weight.data.fill_(float("nan"))
             assert "NaN" in expect_exit(lambda: checkpoint.save(str(ckpt), 9, model=broken))
     finally:
-        checkpoint.b2_api, train.AcousticModel, Bucket.get_file_info_by_name, Bucket.upload_local_file = real
+        checkpoint.b2_api, train.AcousticModel = real
+        for method, function in real_methods.items():
+            setattr(Bucket, method, function)
         for variable in checkpoint.B2_VARIABLES:
             os.environ.pop(variable, None)
 
