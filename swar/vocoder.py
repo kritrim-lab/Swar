@@ -90,7 +90,7 @@ class ResolutionDiscriminator(nn.Module):
         self.post = weight_norm(nn.Conv2d(32, 1, 3, padding=1))
 
     def forward(self, wav):
-        spectrum = torch.stft(wav, self.n_fft, self.n_fft // 4, window=self.window, return_complex=True)
+        spectrum = torch.stft(wav.float(), self.n_fft, self.n_fft // 4, window=self.window, return_complex=True)
         x = spectrum.abs().transpose(1, 2)[:, None]  # [B, 1, frames, frequencies]
         return run_layers(x, self.layers, self.post)
 
