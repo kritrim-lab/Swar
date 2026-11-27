@@ -38,15 +38,14 @@ def remote_name(path):
 
 def pull(bucket, path):
     """Download the B2 checkpoint when it is further along than the local one, or there is none."""
-    from b2sdk.v2.exception import FileNotPresent
-
     name = remote_name(path)
-    try:
-        info = bucket.get_file_info_by_name(name)
-    except FileNotPresent:
+    # Listing, not get_file_info_by_name: B2 refuses that one once the daily download cap is used up.
+    # Any error here stops the run: starting from zero would later overwrite the good copy.
+    versions = (v for v in bucket.list_file_versions(name) if v.action != "start")  # "start": unfinished upload
+    info = max(versions, key=lambda v: v.upload_timestamp, default=None)
+    if info is None or info.action == "hide":
         print(f"B2: no {name} yet")
         return
-    # every other error stops the run: starting from zero would later overwrite the good copy
     remote_step = int(info.file_info.get("step", -1))
     if os.path.exists(path):
         local_step = torch.load(path, map_location="cpu", weights_only=True)["step"]
