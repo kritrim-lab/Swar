@@ -54,6 +54,7 @@ def main(argv=None):
     parser.add_argument("--save-every", type=int, default=500)
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--workers", type=int, default=2)
+    parser.add_argument("--fp32", action="store_true", help="disable mixed precision if training is unstable")
     args = parser.parse_args(argv)
 
     torch.manual_seed(1234)
@@ -68,11 +69,13 @@ def main(argv=None):
         pin_memory=device == "cuda", drop_last=len(dataset) >= args.batch_size,
         persistent_workers=args.workers > 0,
     )
-    # shortcut: full precision and constant learning rate, add AMP / decay if training is too slow
+    # shortcut: one GPU and a constant learning rate, add multi-GPU / decay if training stalls
+    amp = device == "cuda" and not args.fp32
     generator, discriminators = Generator().to(device), Discriminators().to(device)
     opt_g = torch.optim.AdamW(generator.parameters(), lr=args.lr, betas=(0.8, 0.99))
     opt_d = torch.optim.AdamW(discriminators.parameters(), lr=args.lr, betas=(0.8, 0.99))
-    parts = dict(generator=generator, discriminators=discriminators, opt_g=opt_g, opt_d=opt_d)
+    scaler = torch.amp.GradScaler("cuda", enabled=amp)  # one scaler serves both optimizers
+    parts = dict(generator=generator, discriminators=discriminators, opt_g=opt_g, opt_d=opt_d, scaler=scaler)
 
     step = 0
     if os.path.exists(args.ckpt):
@@ -86,21 +89,23 @@ def main(argv=None):
         for real in loader:
             real = real.to(device, non_blocking=True)
             mel = wav_to_mel(real)
-            fake = generator(mel)
-
-            d_loss = discriminator_loss(discriminators(real), discriminators(fake.detach()))
+            with torch.autocast(device, dtype=torch.float16, enabled=amp):
+                fake = generator(mel)
+                d_loss = discriminator_loss(discriminators(real), discriminators(fake.detach()))
             opt_d.zero_grad(set_to_none=True)
-            d_loss.backward()
-            opt_d.step()
+            scaler.scale(d_loss).backward()
+            scaler.step(opt_d)
 
             discriminators.requires_grad_(False)
-            with torch.no_grad():
-                real_out = discriminators(real)
-            adversarial, matching = generator_losses(real_out, discriminators(fake))
-            mel_loss = (wav_to_mel(fake) - mel).abs().mean() * MEL_STD  # back to log-mel units
+            with torch.autocast(device, dtype=torch.float16, enabled=amp):
+                with torch.no_grad():
+                    real_out = discriminators(real)
+                adversarial, matching = generator_losses(real_out, discriminators(fake))
+            mel_loss = (wav_to_mel(fake.float()) - mel).abs().mean() * MEL_STD  # fp32, log-mel units
             opt_g.zero_grad(set_to_none=True)
-            (45 * mel_loss + adversarial + 2 * matching).backward()
-            opt_g.step()
+            scaler.scale(45 * mel_loss + adversarial + 2 * matching).backward()
+            scaler.step(opt_g)
+            scaler.update()
             discriminators.requires_grad_(True)
 
             step += 1
