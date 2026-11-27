@@ -121,12 +121,11 @@ class AcousticModel(nn.Module):
 
     def encode(self, ids, mask):
         x = self.embed(ids)
-        # mu sees only its own character: with sentence context it memorises whatever alignment
-        # it started with. The decoder and duration predictor still get the context in x.
-        mu = self.to_mu(x) * mask.unsqueeze(-1)
         for block in self.encoder:
             x = block(x, mask)
-        return x, mu
+        # mu reads the whole sentence: in real speech a letter's sound depends on its neighbours.
+        # On tiny data this can memorise a wrong alignment, which the diagonal warm-up counters.
+        return x, self.to_mu(x) * mask.unsqueeze(-1)
 
     @torch.no_grad()
     def sample(self, condition, mask, steps=10, temperature=0.667):
