@@ -47,6 +47,22 @@ First run on real data: train on a manifest of about 8 clips with `--steps 2000`
 is recognisable, before starting a long run.
 
 
+## Full dataset: Rasa
+
+[AI4Bharat Rasa](https://huggingface.co/datasets/ai4bharat/Rasa) (CC BY 4.0, by AI4Bharat) has about
+29 hours of one female Nepali speaker. Accept its terms on that page, create a Hugging Face read
+token, store it as the `HF_TOKEN` secret, load it into the environment, then:
+
+```
+python prepare_rasa.py --out /content/rasa
+python train.py --data /content/rasa/train.txt --ckpt /content/ckpt/acoustic.pt
+python train_vocoder.py --data /content/rasa/train --ckpt /content/ckpt/vocoder.pt
+```
+
+It downloads about 18 GB (both speakers are mixed in the same files) and keeps the female,
+non-emotional clips as 22.05 kHz audio. Sentences in `test.txt` are never trained on: use them to
+judge how the model reads new text.
+
 ## Backblaze B2 checkpoints
 
 When configured, both training commands download the checkpoint at the start and upload it at
