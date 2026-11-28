@@ -128,7 +128,7 @@ class AcousticModel(nn.Module):
         return x, self.to_mu(x) * mask.unsqueeze(-1)
 
     @torch.no_grad()
-    def sample(self, condition, mask, steps=10, temperature=0.667):
+    def sample(self, condition, mask, steps=32, temperature=1.0):
         """Euler integration from noise (t=0) to mel (t=1). condition [B, T, D] -> [B, T, N_MELS]."""
         x = torch.randn(*condition.shape[:2], N_MELS, device=condition.device) * temperature
         for i in range(steps):
@@ -177,7 +177,7 @@ class AcousticModel(nn.Module):
         return {"flow": flow_loss, "prior": prior_loss, "duration": duration_loss}, align
 
     @torch.no_grad()
-    def infer(self, ids, speed=1.0, steps=10, temperature=0.667):
+    def infer(self, ids, speed=1.0, steps=32, temperature=1.0):
         """ids [text] -> mel [N_MELS, T] for one sentence. Call .eval() first."""
         ids = ids[None]
         mask = torch.ones_like(ids, dtype=torch.bool)
