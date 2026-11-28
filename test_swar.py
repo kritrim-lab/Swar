@@ -1,10 +1,8 @@
 """Quick correctness checks on fake data, no GPU or dataset needed: python test_swar.py"""
-import contextlib
 import importlib.util
 import io
 import itertools
 import math
-import os
 import runpy
 import shutil
 import sys
@@ -20,11 +18,6 @@ import train_vocoder
 from swar import checkpoint
 from swar.data import HOP, SR, text_to_ids, wav_to_mel
 from swar.model import monotonic_alignment_search
-
-
-# the tests must never touch a real bucket, even in a notebook where the keys are set
-for variable in (*checkpoint.B2_VARIABLES, "B2_PREFIX"):
-    os.environ.pop(variable, None)
 
 
 def brute_force(score):
@@ -209,105 +202,20 @@ def test_prepare_rasa():
         assert not list(out.rglob("*.parquet")), "downloaded shard was not deleted"
 
 
-def expect_exit(function):
-    try:
-        function()
-    except (SystemExit, ConnectionError) as error:
-        return str(error)
-    raise AssertionError("should have stopped")
-
-
-def test_backblaze():
-    """Against b2sdk's in-memory fake of B2: no account, keys or network."""
-    if importlib.util.find_spec("b2sdk") is None:
-        print("b2sdk not installed, skipping")
-        return
-    from b2sdk.v2 import B2Api, B2HttpApiConfig, Bucket, InMemoryAccountInfo, RawSimulator
-
-    from swar.model import AcousticModel
-
-    api = B2Api(InMemoryAccountInfo(), api_config=B2HttpApiConfig(_raw_api_class=RawSimulator))
-    api.authorize_account("production", *api.session.raw_api.create_account())
-    api.create_bucket("swar-test", "allPrivate")
-    real = checkpoint.b2_api, train.AcousticModel
-    methods = ("get_file_info_by_name", "download_file_by_id", "list_file_versions", "upload_local_file")
-    real_methods = {method: getattr(Bucket, method) for method in methods}
-
-    def refuse(*args, **kwargs):
-        raise ConnectionError("refused")
-
-    checkpoint.b2_api = lambda: api
-    train.AcousticModel = lambda: AcousticModel(dim=16, encoder_layers=1, decoder_layers=1)
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            sf.write(tmp / "0.wav", 0.1 * torch.randn(SR).numpy(), SR)
-            (tmp / "manifest.txt").write_text("0.wav|नमस्ते", encoding="utf-8")
-            ckpt = tmp / "run" / "a.pt"
-
-            def run(steps):
-                output = io.StringIO()
-                with contextlib.redirect_stdout(output):
-                    train.main(["--data", str(tmp / "manifest.txt"), "--ckpt", str(ckpt), "--steps", str(steps),
-                                "--batch-size", "1", "--workers", "0", "--save-every", "1"])
-                return output.getvalue()
-
-            def local_step():
-                return torch.load(ckpt, weights_only=True)["step"]
-
-            def remote_steps():
-                bucket = api.get_bucket_by_name("swar-test")
-                return [int(v.file_info["step"]) for v in bucket.list_file_versions("checkpoints/a.pt")]
-
-            os.environ["B2_BUCKET"] = "swar-test"
-            expect_exit(lambda: run(1))  # half configured
-            os.environ.update(B2_APPLICATION_KEY_ID="fake", B2_APPLICATION_KEY="fake")
-
-            run(2)
-            assert remote_steps() == [2, 1]
-            shutil.copy(ckpt, tmp / "step2.pt")
-
-            ckpt.unlink()  # a fresh machine
-            assert "at step 2" in run(4), "did not resume from the B2 copy"
-            assert remote_steps() == [4, 3], "should keep only the two newest"
-
-            shutil.copy(tmp / "step2.pt", ckpt)  # a stale copy, e.g. left on Google Drive
-            assert "at step 4" in run(5), "stale local file won over B2"
-
-            Bucket.upload_local_file = refuse
-            assert "UPLOAD FAILED" in expect_exit(lambda: run(7))  # mid-run warns, the end must fail
-            assert local_step() == 7 and remote_steps() == [5, 4]
-            Bucket.upload_local_file = real_methods["upload_local_file"]
-            assert "keeping local step 7" in run(8), "local progress must survive a failed upload"
-            assert remote_steps()[0] == 8
-
-            # B2's daily download cap: lookups by name and downloads fail, listing and uploads work
-            Bucket.get_file_info_by_name = Bucket.download_file_by_id = refuse
-            assert "keeping local step 8" in run(9), "the cap blocked a run that needed no download"
-            assert remote_steps()[0] == 9
-            ckpt.unlink()
-            expect_exit(lambda: run(10))  # a download is needed: stop, never start from zero
-            assert not ckpt.exists() and remote_steps()[0] == 9
-
-            Bucket.list_file_versions = refuse
-            expect_exit(lambda: run(10))  # cannot check B2 at all: stop
-            assert not ckpt.exists()
-            Bucket.list_file_versions = real_methods["list_file_versions"]
-            assert remote_steps()[0] == 9
-
-            broken = torch.nn.Linear(2, 2)
-            broken.weight.data.fill_(float("nan"))
-            assert "NaN" in expect_exit(lambda: checkpoint.save(str(ckpt), 9, model=broken))
-    finally:
-        checkpoint.b2_api, train.AcousticModel = real
-        for method, function in real_methods.items():
-            setattr(Bucket, method, function)
-        for variable in checkpoint.B2_VARIABLES:
-            os.environ.pop(variable, None)
+def test_nan_is_not_saved():
+    broken = torch.nn.Linear(2, 2)
+    broken.weight.data.fill_(float("nan"))
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            checkpoint.save(str(Path(tmp) / "a.pt"), 1, model=broken)
+        except SystemExit:
+            assert not list(Path(tmp).iterdir()), "NaN weights reached the disk"
+            return
+    raise AssertionError("NaN weights were saved")
 
 
 if __name__ == "__main__":
-    for test in (test_alignment, test_text, test_train_resume_and_synth, test_learns_alignment, test_vocoder_learns, test_backblaze,
-                 test_prepare_rasa):
+    for test in (test_alignment, test_text, test_train_resume_and_synth, test_learns_alignment, test_vocoder_learns,
+                 test_nan_is_not_saved, test_prepare_rasa):
         test()
         print("ok", test.__name__)
