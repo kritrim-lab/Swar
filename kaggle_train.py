@@ -7,7 +7,7 @@ import os, re, subprocess, sys, threading, time
 from kaggle_secrets import UserSecretsClient
 from IPython.display import Audio, display
 
-VOCODER_STEPS, SPEECH_STEPS = 25000, 50000
+VOCODER_STEPS, SPEECH_STEPS = 50000, 75000
 os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN").strip()
 started = time.time()
 code, data = "/tmp/Swar", "/tmp/rasa"
@@ -44,7 +44,7 @@ assert subprocess.check_output(["nvidia-smi", "-L"], text=True).count("GPU ") >=
 if not os.path.isdir(code):
     run("git", "clone", "https://github.com/kritrim-lab/Swar.git", code)
 run("git", "-C", code, "pull")
-assert "def connect" not in open(f"{code}/swar/checkpoint.py", encoding="utf-8").read(), "old code: push first"
+assert "EMA_DECAY" in open(f"{code}/train.py", encoding="utf-8").read(), "old code: push first"
 run(sys.executable, "-m", "pip", "install", "-q", "-r", f"{code}/requirements.txt")
 # take the furthest copy of each checkpoint, load both models and report progress before any training
 open("/tmp/progress.py", "w").write("""
