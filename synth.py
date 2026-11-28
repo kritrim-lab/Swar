@@ -18,8 +18,8 @@ parser.add_argument("--vocoder", help="vocoder checkpoint; without it the audio 
 parser.add_argument("--text", required=True)
 parser.add_argument("--out", default="out.wav")
 parser.add_argument("--speed", type=float, default=1.0)
-parser.add_argument("--steps", type=int, default=10, help="decoder refinement steps; more is slower")
-parser.add_argument("--temperature", type=float, default=0.667, help="variation; lower is flatter")
+parser.add_argument("--steps", type=int, default=32, help="decoder refinement steps; more is slower")
+parser.add_argument("--temperature", type=float, default=1.0, help="variation; lower is flatter")
 args = parser.parse_args()
 
 if args.steps < 1 or args.speed <= 0:
@@ -29,6 +29,7 @@ if not ids:
     parser.error("--text is empty")
 model = AcousticModel()
 step = load(args.ckpt, model=model)
+load(args.ckpt, ema=model)  # the averaged weights, when the checkpoint has them
 mel = model.eval().infer(torch.tensor(ids), args.speed, args.steps, args.temperature)
 if args.vocoder:
     generator = Generator()
