@@ -16,7 +16,7 @@ import prepare_rasa
 import train
 import train_vocoder
 from swar import checkpoint
-from swar.data import HOP, SR, text_to_ids, wav_to_mel
+from swar.data import HOP, SR, normalise, text_to_ids, wav_to_mel
 from swar.model import monotonic_alignment_search
 
 
@@ -54,6 +54,20 @@ def test_text():
     raise AssertionError("unsupported characters were accepted")
 
 
+def test_numbers():
+    assert normalise("५ र 21") == "पाँच र एक्काइस"
+    assert normalise("१००") == "एक सय"
+    assert normalise("१,२५,०००") == "एक लाख पच्चीस हजार"
+    assert normalise("२०८३ साल") == "दुई हजार त्रियासी साल"
+    assert normalise("१९५३") == "उन्नाइस सय त्रिपन्न"
+    assert normalise("१,०१,५००") == "एक लाख एक हजार पाँच सय"
+    assert normalise("०१") == "शून्य एक"
+    assert normalise("९८४१२३४५६७") == "नौ आठ चार एक दुई तीन चार पाँच छ सात"
+    assert normalise("१, २") == "एक, दुई", "a list was read as one number"
+    for n in (0, 99, 101, 1001, 12_34_56_789, 5_000_000_000):
+        text_to_ids(str(n))  # every word uses known characters
+
+
 def test_train_resume_and_synth():
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -66,7 +80,14 @@ def test_train_resume_and_synth():
         args = ["--data", str(tmp / "manifest.txt"), "--ckpt", ckpt, "--batch-size", "3", "--workers", "0"]
         train.main(args + ["--steps", "2"])
         train.main(args + ["--steps", "3"])
-        assert torch.load(ckpt, weights_only=True)["step"] == 3, "did not resume"
+        state = torch.load(ckpt, weights_only=True)
+        assert state["step"] == 3, "did not resume"
+        key = "to_mu.weight"
+        assert not torch.equal(state["ema"][key], state["model"][key]), "averaged weights are not separate"
+        del state["ema"]  # as saved before weight averaging was added
+        torch.save(state, ckpt)
+        train.main(args + ["--steps", "4"])
+        assert "ema" in torch.load(ckpt, weights_only=True), "old speech checkpoint did not resume"
 
         voc = str(tmp / "ckpt" / "v.pt")
         args = ["--data", str(tmp), "--ckpt", voc, "--batch-size", "2", "--workers", "0"]
@@ -126,7 +147,8 @@ def test_learns_alignment():
     frame_mask = torch.arange(mels.shape[2])[None] < mel_lens[:, None]
     with torch.no_grad():
         condition = align.transpose(1, 2) @ model.encode(ids, text_mask)[0]
-    sampled = model.sample(condition, frame_mask)
+    # lower temperature: this barely trained toy is judged on distance to one exact target
+    sampled = model.sample(condition, frame_mask, temperature=0.667)
     target = mels.transpose(1, 2)
     error = (sampled - target)[frame_mask].abs().mean().item()
     from_noise = (torch.randn_like(target) - target)[frame_mask].abs().mean().item()
@@ -215,7 +237,7 @@ def test_nan_is_not_saved():
 
 
 if __name__ == "__main__":
-    for test in (test_alignment, test_text, test_train_resume_and_synth, test_learns_alignment, test_vocoder_learns,
+    for test in (test_alignment, test_text, test_numbers, test_train_resume_and_synth, test_learns_alignment, test_vocoder_learns,
                  test_nan_is_not_saved, test_prepare_rasa):
         test()
         print("ok", test.__name__)
