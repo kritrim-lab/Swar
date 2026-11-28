@@ -3,6 +3,7 @@
     python train.py --data /path/to/manifest.txt --ckpt /path/to/acoustic.pt
 """
 import argparse
+import copy
 import os
 
 import torch
@@ -12,6 +13,7 @@ from swar.data import TTSDataset, collate
 from swar.model import AcousticModel
 
 DIAGONAL, DIAGONAL_STEPS = 2000.0, 1000  # alignment warm-up, fades to zero
+EMA_DECAY = 0.999  # speak with a running average of the weights: steadier than any single step
 
 
 def main(argv=None):
@@ -46,6 +48,10 @@ def main(argv=None):
         step = load(args.ckpt, device, **parts)
         torch.manual_seed(1234 + step)  # do not replay the same shuffle order after a resume
         print(f"resumed from {args.ckpt} at step {step}")
+    ema = copy.deepcopy(model).requires_grad_(False)
+    if os.path.exists(args.ckpt):
+        load(args.ckpt, device, ema=ema)  # older checkpoints have none: the average starts here
+    parts["ema"] = ema
     print(f"device={device} params={sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
     model.train()
@@ -61,6 +67,9 @@ def main(argv=None):
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
+            with torch.no_grad():
+                for average, weight in zip(ema.parameters(), model.parameters()):
+                    average.lerp_(weight, 1 - EMA_DECAY)
             step += 1
             if step % args.log_every == 0:
                 print(f"step {step} " + " ".join(f"{k}={v.item():.3f}" for k, v in losses.items()), flush=True)
