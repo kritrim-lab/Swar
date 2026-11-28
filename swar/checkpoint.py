@@ -19,8 +19,8 @@ def load(path, device="cpu", **parts):
     """Fills the given parts in place and returns the step."""
     state = torch.load(path, map_location=device, weights_only=True)  # never unpickle arbitrary code
     for name, part in parts.items():
-        # a scaler saved on CPU is empty, and early vocoder checkpoints have none at all
-        saved = state.get(name) if name == "scaler" else state[name]
+        # a scaler saved on CPU is empty; older checkpoints have no "ema" or no scaler at all
+        saved = state.get(name) if name in ("scaler", "ema") else state[name]
         if saved:
             part.load_state_dict(saved)
     return state["step"]
