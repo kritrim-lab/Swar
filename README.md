@@ -40,7 +40,8 @@ python synth.py --ckpt /path/to/acoustic.pt --vocoder /path/to/vocoder.pt --text
 ```
 
 The two models train separately, in any order. Re-running a training command resumes from `--ckpt`.
-Free sessions get cut and their disks can be wiped, so set up Backblaze below.
+Free sessions get cut and their disks can be wiped, so keep `--ckpt` somewhere that survives: on
+Kaggle under `/kaggle/working` followed by Save Version, on Colab on a mounted Google Drive.
 
 First run on real data: train on a manifest of about 8 clips with `--steps 2000` and check that
 `flow` and `prior` loss fall (`flow` falls slowly and never reaches zero) and one of those sentences
@@ -62,44 +63,3 @@ python train_vocoder.py --data /content/rasa/train --ckpt /content/ckpt/vocoder.
 It downloads about 18 GB (both speakers are mixed in the same files) and keeps the female,
 non-emotional clips as 22.05 kHz audio. Sentences in `test.txt` are never trained on: use them to
 judge how the model reads new text.
-
-## Backblaze B2 checkpoints
-
-When configured, both training commands download the checkpoint at the start and upload it at
-every save (`--save-every`, default 500 steps).
-
-1. In Backblaze, create a **private** bucket, then an application key limited to that bucket with
-   **Read and Write** access (it must be able to delete files). Never put the key in the repo or
-   in a notebook cell.
-2. Add three secrets named `B2_APPLICATION_KEY_ID`, `B2_APPLICATION_KEY` and `B2_BUCKET`
-   (Colab: the key icon in the sidebar, with notebook access on. Kaggle: Add-ons, Secrets).
-3. Before training, run one of these in a notebook cell. The `!python ...` commands inherit them.
-
-```python
-import os
-from google.colab import userdata                  # Colab
-for name in ("B2_APPLICATION_KEY_ID", "B2_APPLICATION_KEY", "B2_BUCKET"):
-    os.environ[name] = userdata.get(name)
-```
-
-```python
-import os
-from kaggle_secrets import UserSecretsClient       # Kaggle
-for name in ("B2_APPLICATION_KEY_ID", "B2_APPLICATION_KEY", "B2_BUCKET"):
-    os.environ[name] = UserSecretsClient().get_secret(name)
-```
-
-Check the training output: `B2 is OFF` means the variables did not arrive.
-
-How it behaves:
-
-- The file in B2 is `checkpoints/<name of --ckpt>`. **The same name resumes the same run**, so use a
-  new name for a new experiment (`trial.pt` for the 8-clip test, `acoustic.pt` for the real one).
-  `B2_PREFIX` changes the folder.
-- Only the **2 newest versions** of each file are kept; older ones are permanently deleted.
-- Whichever of B2 and the local file has more training steps wins.
-- If B2 cannot be checked at startup, training stops. A failed upload during training only warns
-  and is retried at the next save; a failed final upload ends with an error.
-- Run one session per checkpoint name at a time, or they overwrite each other.
-- Each upload pauses training; the output prints how long. Raise `--save-every` if it is slow.
-\n
