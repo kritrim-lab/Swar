@@ -12,7 +12,7 @@ import soundfile as sf
 import torch
 import torchaudio
 
-from swar.checkpoint import connect, load, pull, save
+from swar.checkpoint import load, save
 from swar.data import HOP, MEL_STD, SR, wav_to_mel
 from swar.vocoder import Discriminators, Generator, discriminator_loss, generator_losses
 
@@ -60,9 +60,6 @@ def main(argv=None):
     torch.manual_seed(1234)
     random.seed(1234)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    bucket = connect()
-    if bucket is not None:
-        pull(bucket, args.ckpt)
     dataset = Segments(args.data)
     loader = torch.utils.data.DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers,
@@ -113,10 +110,10 @@ def main(argv=None):
                 print(f"step {step} mel={mel_loss.item():.3f} adv={adversarial.item():.2f} "
                       f"match={matching.item():.2f} disc={d_loss.item():.2f}", flush=True)
             if step % args.save_every == 0 and step < args.steps:
-                save(args.ckpt, step, bucket, **parts)
+                save(args.ckpt, step, **parts)
             if step >= args.steps:
                 break
-    save(args.ckpt, step, bucket, final=True, **parts)
+    save(args.ckpt, step, **parts)
     print(f"saved {args.ckpt} at step {step}")
 
 
