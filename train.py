@@ -7,7 +7,7 @@ import os
 
 import torch
 
-from swar.checkpoint import connect, load, pull, save
+from swar.checkpoint import load, save
 from swar.data import TTSDataset, collate
 from swar.model import AcousticModel
 
@@ -29,9 +29,6 @@ def main(argv=None):
     torch.manual_seed(1234)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     amp = device == "cuda"
-    bucket = connect()
-    if bucket is not None:
-        pull(bucket, args.ckpt)
     dataset = TTSDataset(args.data)
     loader = torch.utils.data.DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collate,
@@ -68,10 +65,10 @@ def main(argv=None):
             if step % args.log_every == 0:
                 print(f"step {step} " + " ".join(f"{k}={v.item():.3f}" for k, v in losses.items()), flush=True)
             if step % args.save_every == 0 and step < args.steps:
-                save(args.ckpt, step, bucket, **parts)
+                save(args.ckpt, step, **parts)
             if step >= args.steps:
                 break
-    save(args.ckpt, step, bucket, final=True, **parts)
+    save(args.ckpt, step, **parts)
     print(f"saved {args.ckpt} at step {step}")
 
 
