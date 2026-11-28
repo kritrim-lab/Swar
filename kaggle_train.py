@@ -1,13 +1,14 @@
 # Paste this whole file into one Kaggle notebook cell (GPU T4 x2, Internet On). Safe to re-run.
-# Secrets needed: B2_APPLICATION_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET, HF_TOKEN.
+# Secret needed: HF_TOKEN. Attach the dataset or notebook output that holds both checkpoints.
 # Change VOCODER_STEPS / SPEECH_STEPS to train further. Both models resume from their last save.
-import glob, os, re, shutil, subprocess, sys, threading, time
+# Checkpoints exist only on Kaggle: run this with Save Version -> Save & Run All, so the output is kept
+# even if the tab is closed. Keep it the only cell in the notebook. Limit: 12 h per run.
+import os, re, subprocess, sys, threading, time
 from kaggle_secrets import UserSecretsClient
 from IPython.display import Audio, display
 
 VOCODER_STEPS, SPEECH_STEPS = 25000, 50000
-for name in ("B2_APPLICATION_KEY_ID", "B2_APPLICATION_KEY", "B2_BUCKET", "HF_TOKEN"):
-    os.environ[name] = UserSecretsClient().get_secret(name).strip()
+os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN").strip()
 started = time.time()
 code, data = "/tmp/Swar", "/tmp/rasa"
 voc = "/kaggle/working/ckpt/vocoder.pt"
@@ -43,32 +44,33 @@ assert subprocess.check_output(["nvidia-smi", "-L"], text=True).count("GPU ") >=
 if not os.path.isdir(code):
     run("git", "clone", "https://github.com/kritrim-lab/Swar.git", code)
 run("git", "-C", code, "pull")
-assert "daily download cap" in open(f"{code}/swar/checkpoint.py", encoding="utf-8").read(), "old code: push first"
+assert "def connect" not in open(f"{code}/swar/checkpoint.py", encoding="utf-8").read(), "old code: push first"
 run(sys.executable, "-m", "pip", "install", "-q", "-r", f"{code}/requirements.txt")
-for path in (voc, acoustic):   # from an attached dataset or earlier notebook output: no B2 download
-    found = glob.glob(f"/kaggle/input/**/{os.path.basename(path)}", recursive=True)
-    print(path, "<-", found[:1] if not os.path.exists(path) else "already here")
-    if found and not os.path.exists(path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        shutil.copy(found[0], path)
-
-# load both models and report progress before any training
+# take the furthest copy of each checkpoint, load both models and report progress before any training
 open("/tmp/progress.py", "w").write("""
-import os, sys
+import glob, os, shutil, sys
 sys.path.insert(0, ".")
-from swar.checkpoint import connect, load, pull
+import torch
+from swar.checkpoint import load
 from swar.model import AcousticModel
 from swar.vocoder import Generator
-bucket = connect()
+
+def saved_step(path):
+    return torch.load(path, map_location="cpu", weights_only=True)["step"]
+
 for path, target, key, model in ((sys.argv[1], int(sys.argv[2]), "model", AcousticModel()),
                                  (sys.argv[3], int(sys.argv[4]), "generator", Generator())):
-    if bucket:
-        pull(bucket, path)   # newest first, so this is the step training resumes from
-    if not os.path.exists(path):
-        print(f"{path}: NOT FOUND, training would start from step 0")
-        continue
+    found = [path] if os.path.exists(path) else []
+    found += glob.glob("/kaggle/input/**/" + os.path.basename(path), recursive=True)
+    if not found:   # never start from step 0 by accident
+        raise SystemExit(f"{path}: NOT FOUND. Attach the dataset or notebook output that holds it.")
+    best = max(found, key=saved_step)
+    if best != path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        shutil.copy(best, path + ".tmp")
+        os.replace(path + ".tmp", path)
     step = load(path, **{key: model})
-    print(f"{path}: loaded, step {step} of {target} ({step / target:.0%}), {max(target - step, 0)} left")
+    print(f"{path}: loaded from {best}, step {step} of {target} ({step / target:.0%}), {max(target - step, 0)} left")
 """)
 run(sys.executable, "/tmp/progress.py", acoustic, str(SPEECH_STEPS), voc, str(VOCODER_STEPS), cwd=code)
 run(sys.executable, "-u", "prepare_rasa.py", "--out", data, cwd=code)
