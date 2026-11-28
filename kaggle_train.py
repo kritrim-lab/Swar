@@ -1,13 +1,15 @@
 # Paste this whole file into one Kaggle notebook cell (GPU T4 x2, Internet On). Safe to re-run.
 # Secret needed: HF_TOKEN. Attach the dataset or notebook output that holds both checkpoints.
 # Change VOCODER_STEPS / SPEECH_STEPS to train further. Both models resume from their last save.
+# VOCODER_FROM / SPEECH_FROM: the run stops early if the attached checkpoints are older than these.
 # Checkpoints exist only on Kaggle: run this with Save Version -> Save & Run All, so the output is kept
 # even if the tab is closed. Keep it the only cell in the notebook. Limit: 12 h per run.
 import os, re, subprocess, sys, threading, time
 from kaggle_secrets import UserSecretsClient
 from IPython.display import Audio, display
 
-VOCODER_STEPS, SPEECH_STEPS = 50000, 75000
+VOCODER_STEPS, SPEECH_STEPS = 100000, 135000
+VOCODER_FROM, SPEECH_FROM = 50000, 75000
 os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN").strip()
 started = time.time()
 code, data = "/tmp/Swar", "/tmp/rasa"
@@ -58,13 +60,15 @@ from swar.vocoder import Generator
 def saved_step(path):
     return torch.load(path, map_location="cpu", weights_only=True)["step"]
 
-for path, target, key, model in ((sys.argv[1], int(sys.argv[2]), "model", AcousticModel()),
-                                 (sys.argv[3], int(sys.argv[4]), "generator", Generator())):
+for path, target, least, key, model in ((sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), "model", AcousticModel()),
+                                        (sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), "generator", Generator())):
     found = [path] if os.path.exists(path) else []
     found += glob.glob("/kaggle/input/**/" + os.path.basename(path), recursive=True)
     if not found:   # never start from step 0 by accident
         raise SystemExit(f"{path}: NOT FOUND. Attach the dataset or notebook output that holds it.")
     best = max(found, key=saved_step)
+    if saved_step(best) < least:   # an older copy would train for hours from the wrong place
+        raise SystemExit(f"{best} is only step {saved_step(best)}, need {least}: attach the newer checkpoint.")
     if best != path:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         shutil.copy(best, path + ".tmp")
@@ -72,7 +76,8 @@ for path, target, key, model in ((sys.argv[1], int(sys.argv[2]), "model", Acoust
     step = load(path, **{key: model})
     print(f"{path}: loaded from {best}, step {step} of {target} ({step / target:.0%}), {max(target - step, 0)} left")
 """)
-run(sys.executable, "/tmp/progress.py", acoustic, str(SPEECH_STEPS), voc, str(VOCODER_STEPS), cwd=code)
+run(sys.executable, "/tmp/progress.py", acoustic, str(SPEECH_STEPS), str(SPEECH_FROM),
+    voc, str(VOCODER_STEPS), str(VOCODER_FROM), cwd=code)
 run(sys.executable, "-u", "prepare_rasa.py", "--out", data, cwd=code)
 
 wait(start("vocoder", [sys.executable, "-u", "train_vocoder.py", "--data", f"{data}/train", "--ckpt", voc,
